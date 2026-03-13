@@ -39,6 +39,7 @@ const connector = connect(mapStateToProps, mapDispatchToProps);
 
 interface Props {
   queue: string;
+  autoRefreshEnabled: boolean;
 }
 
 function AggregatingTasksTableContainer(
@@ -52,7 +53,7 @@ function AggregatingTasksTableContainer(
     listGroupsAsync(queue);
   }, [listGroupsAsync, queue]);
 
-  usePolling(fetchGroups, pollInterval);
+  usePolling(fetchGroups, pollInterval, props.autoRefreshEnabled);
 
   if (props.groupsError.length > 0) {
     return (
@@ -86,6 +87,7 @@ function AggregatingTasksTableContainer(
           queue={props.queue}
           totalTaskCount={selectedGroup.size}
           selectedGroup={selectedGroup.group}
+          autoRefreshEnabled={props.autoRefreshEnabled}
         />
       ) : (
         <Alert severity="info" className={classes.alert}>

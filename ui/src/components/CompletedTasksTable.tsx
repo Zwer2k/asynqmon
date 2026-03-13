@@ -56,6 +56,7 @@ type ReduxProps = ConnectedProps<typeof connector>;
 interface Props {
   queue: string; // name of the queue.
   totalTaskCount: number; // totoal number of completed tasks.
+  autoRefreshEnabled: boolean;
 }
 
 const columns: TableColumn[] = [

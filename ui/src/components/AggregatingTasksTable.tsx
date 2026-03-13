@@ -68,6 +68,7 @@ interface Props {
   queue: string;
   selectedGroup: string;
   totalTaskCount: number; // total number of tasks in the group
+  autoRefreshEnabled: boolean;
 }
 
 const columns: TableColumn[] = [
@@ -227,6 +228,8 @@ function AggregatingTasksTable(props: Props & ReduxProps) {
       allActionPending={props.allActionPending}
       pollInterval={props.pollInterval}
       pageSize={props.pageSize}
+      selectedGroup={props.selectedGroup}
+      autoRefreshEnabled={props.autoRefreshEnabled}
       listTasks={listTasks}
       deleteAllTasks={deleteAllTasks}
       archiveAllTasks={archiveAllTasks}

@@ -34,7 +34,6 @@ function TabPanel(props: TabPanelProps) {
       hidden={value !== selected}
       id={`scrollable-auto-tabpanel-${selected}`}
       aria-labelledby={`scrollable-auto-tab-${selected}`}
-      style={{ flex: 1, overflowY: "scroll" }}
       {...other}
     >
       {value === selected && children}
@@ -85,8 +84,7 @@ const useStyles = makeStyles((theme) => ({
   },
   header: {
     display: "flex",
-    alignItems: "center",
-    paddingTop: theme.spacing(1),
+    alignItems: "center",    
   },
   heading: {
     paddingTop: theme.spacing(1),

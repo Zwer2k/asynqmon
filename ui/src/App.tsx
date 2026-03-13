@@ -106,19 +106,26 @@ const useStyles = (theme: Theme) =>
     appBarSpacer: theme.mixins.toolbar,
     mainContainer: {
       display: "flex",
-      width: "100vw",
+      flex: 1,
+      width: "100%",
+      minWidth: 0,
     },
     content: {
       flex: 1,
       height: "100vh",
+      display: "flex",
+      flexDirection: "column",
+      minWidth: 0,
       overflow: "hidden",
       background: theme.palette.background.paper,
     },
     contentWrapper: {
-      height: "100%",
       display: "flex",
-      paddingTop: "64px", // app-bar height
-      overflow: "scroll",
+      flex: 1,
+      minWidth: 0,
+      minHeight: 0,
+      overflowX: "hidden",
+      overflowY: "auto",
     },
     sidebarContainer: {
       display: "flex",
@@ -272,6 +279,7 @@ function App(props: ConnectedProps<typeof connector>) {
               </div>
             </Drawer>
             <main className={classes.content}>
+              <div className={classes.appBarSpacer} />
               <div className={classes.contentWrapper}>
                 <Switch>
                   <Route exact path={paths.TASK_DETAILS}>

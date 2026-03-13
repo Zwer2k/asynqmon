@@ -31,6 +31,10 @@ const useStyles = makeStyles((theme) => ({
   table: {
     minWidth: 650,
   },
+  tableContainer: {
+    maxHeight: "calc(100vh - 320px)",
+    overflow: "auto",
+  },
   stickyHeaderCell: {
     background: theme.palette.background.paper,
   },
@@ -225,7 +229,7 @@ export default function TasksTable(props: Props) {
           menuItemActions={allActions}
         />
       )}
-      <TableContainer component={Paper}>
+      <TableContainer component={Paper} className={classes.tableContainer}>
         <Table
           stickyHeader={true}
           className={classes.table}
@@ -355,10 +359,15 @@ export const useRowStyles = makeStyles((theme) => ({
   },
   copyButton: {
     display: "none",
+    position: "absolute",
+    left: "calc(100% + 2px)",
+    top: "50%",
+    transform: "translateY(-50%)",
   },
   IdGroup: {
-    display: "flex",
+    display: "inline-flex",
     alignItems: "center",
+    position: "relative",
   },
 }));
 

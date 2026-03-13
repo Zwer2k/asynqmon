@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-03-13
+
+### Added
+
+- (ui): Added client-side task table filters for task ID, task type, payload, and last error across queue task views.
+- (ui): Added an auto-refresh toggle for queue task tables and aggregating task groups.
+
+### Changed
+
+- (ui): Improved task view layout and table sizing to better use available viewport space and keep large tables scrollable.
+- (ui): Updated polling hooks and task table pagination behavior to support filtered result sets and controlled background refresh.
+- (deps): Updated Go from 1.16 to 1.25.0 and refreshed core dependencies including `asynq`, `asynq/x`, `go-redis/v9`, `prometheus/client_golang`, `gorilla/mux`, `rs/cors`, and `go-cmp`.
+
 ## [0.7.0] - 2022-04-11
 
 Version 0.7 added support for [Task Aggregation](https://github.com/hibiken/asynq/wiki/Task-aggregation) feature

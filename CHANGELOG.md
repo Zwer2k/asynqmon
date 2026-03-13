@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- (ui): Added client-side task table filters for task ID, task type, payload, and last error across queue task views.
+- (ui): Added task table filters for task ID, task type, payload, and last error across queue task views.
 - (ui): Added an auto-refresh toggle for queue task tables and aggregating task groups.
 
 ### Changed

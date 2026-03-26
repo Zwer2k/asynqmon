@@ -28,6 +28,10 @@ export interface ListAggregatingTasksResponse {
   task_types?: string[];
 }
 
+export interface ListTaskTypesResponse {
+  task_types: string[];
+}
+
 export interface ListServersResponse {
   servers: ServerInfo[];
 }
@@ -363,7 +367,7 @@ export interface SchedulerEnqueueEvent {
   enqueued_at: string;
 }
 
-export interface PaginationOptions extends Record<string, string | number | undefined> {
+export interface PaginationOptions extends Record<string, string | number | boolean | undefined> {
   size?: number; // size of the page
   page?: number; // page number (1 being the first page)
   filter_id?: string;
@@ -562,6 +566,77 @@ export async function listAggregatingTasks(
   const resp = await axios({
     method: "get",
     url,
+  });
+  return resp.data;
+}
+
+export async function listActiveTaskTypes(
+  qname: string
+): Promise<ListTaskTypesResponse> {
+  const resp = await axios({
+    method: "get",
+    url: `${getBaseUrl()}/queues/${qname}/active_tasks/types`,
+  });
+  return resp.data;
+}
+
+export async function listPendingTaskTypes(
+  qname: string
+): Promise<ListTaskTypesResponse> {
+  const resp = await axios({
+    method: "get",
+    url: `${getBaseUrl()}/queues/${qname}/pending_tasks/types`,
+  });
+  return resp.data;
+}
+
+export async function listScheduledTaskTypes(
+  qname: string
+): Promise<ListTaskTypesResponse> {
+  const resp = await axios({
+    method: "get",
+    url: `${getBaseUrl()}/queues/${qname}/scheduled_tasks/types`,
+  });
+  return resp.data;
+}
+
+export async function listRetryTaskTypes(
+  qname: string
+): Promise<ListTaskTypesResponse> {
+  const resp = await axios({
+    method: "get",
+    url: `${getBaseUrl()}/queues/${qname}/retry_tasks/types`,
+  });
+  return resp.data;
+}
+
+export async function listArchivedTaskTypes(
+  qname: string
+): Promise<ListTaskTypesResponse> {
+  const resp = await axios({
+    method: "get",
+    url: `${getBaseUrl()}/queues/${qname}/archived_tasks/types`,
+  });
+  return resp.data;
+}
+
+export async function listCompletedTaskTypes(
+  qname: string
+): Promise<ListTaskTypesResponse> {
+  const resp = await axios({
+    method: "get",
+    url: `${getBaseUrl()}/queues/${qname}/completed_tasks/types`,
+  });
+  return resp.data;
+}
+
+export async function listAggregatingTaskTypes(
+  qname: string,
+  gname: string
+): Promise<ListTaskTypesResponse> {
+  const resp = await axios({
+    method: "get",
+    url: `${getBaseUrl()}/queues/${qname}/groups/${gname}/aggregating_tasks/types`,
   });
   return resp.data;
 }

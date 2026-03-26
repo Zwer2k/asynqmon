@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-03-26
+
+### Added
+
+- (ui): Added loading progress indicator during table filtering operations.
+- (ui): Added automatic blocking of Auto-Update while filter requests are in-flight to prevent concurrent requests.
+
+### Changed
+
+- (ui): Task types dropdown now refreshes periodically during active monitoring (when Auto-Update is enabled).
+- (backend/task_handlers): Optimized filtered task queries with parallel batch fetching (up to 10 concurrent workers, batch size 1000 tasks) for significantly improved performance on large queues.
+
+### Fixed
+
+- (backend/task_handlers): Eliminated excessive Redis roundtrips during task filtering by increasing batch size and enabling concurrent fetches.
+
 ## [0.7.4] - 2026-03-26
 
 ### Changed

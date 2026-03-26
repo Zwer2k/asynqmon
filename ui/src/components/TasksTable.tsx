@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useEffect } from "react";
+import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { makeStyles } from "@material-ui/core/styles";
 import Table from "@material-ui/core/Table";
 import TableBody from "@material-ui/core/TableBody";
@@ -20,6 +20,7 @@ import ArchiveIcon from "@material-ui/icons/Archive";
 import CancelIcon from "@material-ui/icons/Cancel";
 import Alert from "@material-ui/lab/Alert";
 import AlertTitle from "@material-ui/lab/AlertTitle";
+import LinearProgress from "@material-ui/core/LinearProgress";
 import TablePaginationActions, {
   rowsPerPageOptions,
 } from "./TablePaginationActions";
@@ -29,12 +30,19 @@ import { TaskInfoExtended } from "../reducers/tasksReducer";
 import { TableColumn } from "../types/table";
 import {
   listActiveTasks,
+  listActiveTaskTypes,
   listAggregatingTasks,
+  listAggregatingTaskTypes,
   listArchivedTasks,
+  listArchivedTaskTypes,
   listCompletedTasks,
+  listCompletedTaskTypes,
   listPendingTasks,
+  listPendingTaskTypes,
   listRetryTasks,
+  listRetryTaskTypes,
   listScheduledTasks,
+  listScheduledTaskTypes,
   PaginationOptions,
 } from "../api";
 import { TaskState } from "../types/taskState";
@@ -94,6 +102,16 @@ const useStyles = makeStyles((theme) => ({
   pagination: {
     border: "none",
   },
+  filterLoadingOverlay: {
+    position: "relative",
+  },
+  filterLoadingBar: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+  },
 }));
 
 interface Props {
@@ -144,6 +162,9 @@ export default function TasksTable(props: Props) {
   // State for backend-filtered results
   const [filteredTasks, setFilteredTasks] = useState<TaskInfoExtended[]>([]);
   const [filteredTotal, setFilteredTotal] = useState<number>(0);
+  const [filterLoading, setFilterLoading] = useState(false);
+  const filterLoadingRef = useRef(false);
+  const showFilterLoadingOnNextFetchRef = useRef(false);
 
   const handlePageChange = (
     event: React.MouseEvent<HTMLButtonElement> | null,
@@ -263,6 +284,13 @@ export default function TasksTable(props: Props) {
   // Fetch from backend when filters are active (direct API call, bypasses Redux)
   const fetchFilteredData = useCallback(async () => {
     if (!hasActiveFilters) return;
+    if (filterLoadingRef.current) return; // block parallel calls
+    filterLoadingRef.current = true;
+    const showLoading = showFilterLoadingOnNextFetchRef.current;
+    showFilterLoadingOnNextFetchRef.current = false;
+    if (showLoading) {
+      setFilterLoading(true);
+    }
     const filterOpts: PaginationOptions = {
       page: page + 1,
       size: pageSize,
@@ -279,42 +307,36 @@ export default function TasksTable(props: Props) {
           const r = await listActiveTasks(queue, filterOpts);
           tasks = r.tasks.map((t) => ({ ...t, requestPending: false, canceling: false } as TaskInfoExtended));
           total = r.filtered_total ?? r.tasks.length;
-          setTaskTypes(r.task_types ?? []);
           break;
         }
         case "pending": {
           const r = await listPendingTasks(queue, filterOpts);
           tasks = r.tasks.map((t) => ({ ...t, requestPending: false, canceling: false } as TaskInfoExtended));
           total = r.filtered_total ?? r.tasks.length;
-          setTaskTypes(r.task_types ?? []);
           break;
         }
         case "scheduled": {
           const r = await listScheduledTasks(queue, filterOpts);
           tasks = r.tasks.map((t) => ({ ...t, requestPending: false, canceling: false } as TaskInfoExtended));
           total = r.filtered_total ?? r.tasks.length;
-          setTaskTypes(r.task_types ?? []);
           break;
         }
         case "retry": {
           const r = await listRetryTasks(queue, filterOpts);
           tasks = r.tasks.map((t) => ({ ...t, requestPending: false, canceling: false } as TaskInfoExtended));
           total = r.filtered_total ?? r.tasks.length;
-          setTaskTypes(r.task_types ?? []);
           break;
         }
         case "archived": {
           const r = await listArchivedTasks(queue, filterOpts);
           tasks = r.tasks.map((t) => ({ ...t, requestPending: false, canceling: false } as TaskInfoExtended));
           total = r.filtered_total ?? r.tasks.length;
-          setTaskTypes(r.task_types ?? []);
           break;
         }
         case "completed": {
           const r = await listCompletedTasks(queue, filterOpts);
           tasks = r.tasks.map((t) => ({ ...t, requestPending: false, canceling: false } as TaskInfoExtended));
           total = r.filtered_total ?? r.tasks.length;
-          setTaskTypes(r.task_types ?? []);
           break;
         }
         case "aggregating": {
@@ -326,7 +348,6 @@ export default function TasksTable(props: Props) {
           const r = await listAggregatingTasks(queue, props.selectedGroup, filterOpts);
           tasks = r.tasks.map((t) => ({ ...t, requestPending: false, canceling: false } as TaskInfoExtended));
           total = r.filtered_total ?? r.tasks.length;
-          setTaskTypes(r.task_types ?? []);
           break;
         }
         default:
@@ -337,6 +358,11 @@ export default function TasksTable(props: Props) {
       setFilteredTotal(total);
     } catch (error) {
       console.error("fetchFilteredData: ", error);
+    } finally {
+      filterLoadingRef.current = false;
+      if (showLoading) {
+        setFilterLoading(false);
+      }
     }
   }, [
     hasActiveFilters,
@@ -360,36 +386,35 @@ export default function TasksTable(props: Props) {
   );
 
   const fetchTaskTypes = useCallback(async () => {
-    const pageOpts: PaginationOptions = { page: 1, size: 1 };
     try {
       switch (props.taskState) {
         case "active": {
-          const r = await listActiveTasks(queue, pageOpts);
+          const r = await listActiveTaskTypes(queue);
           setTaskTypes(r.task_types ?? []);
           break;
         }
         case "pending": {
-          const r = await listPendingTasks(queue, pageOpts);
+          const r = await listPendingTaskTypes(queue);
           setTaskTypes(r.task_types ?? []);
           break;
         }
         case "scheduled": {
-          const r = await listScheduledTasks(queue, pageOpts);
+          const r = await listScheduledTaskTypes(queue);
           setTaskTypes(r.task_types ?? []);
           break;
         }
         case "retry": {
-          const r = await listRetryTasks(queue, pageOpts);
+          const r = await listRetryTaskTypes(queue);
           setTaskTypes(r.task_types ?? []);
           break;
         }
         case "archived": {
-          const r = await listArchivedTasks(queue, pageOpts);
+          const r = await listArchivedTaskTypes(queue);
           setTaskTypes(r.task_types ?? []);
           break;
         }
         case "completed": {
-          const r = await listCompletedTasks(queue, pageOpts);
+          const r = await listCompletedTaskTypes(queue);
           setTaskTypes(r.task_types ?? []);
           break;
         }
@@ -398,7 +423,7 @@ export default function TasksTable(props: Props) {
             setTaskTypes([]);
             break;
           }
-          const r = await listAggregatingTasks(queue, props.selectedGroup, pageOpts);
+          const r = await listAggregatingTaskTypes(queue, props.selectedGroup);
           setTaskTypes(r.task_types ?? []);
           break;
         }
@@ -414,6 +439,7 @@ export default function TasksTable(props: Props) {
   const effectiveTotalCount = hasActiveFilters ? filteredTotal : props.totalTaskCount;
 
   const pollingFn = useCallback(() => {
+    if (filterLoadingRef.current) return; // skip while filter fetch is running
     if (hasActiveFilters) {
       fetchFilteredData();
       return;
@@ -422,6 +448,7 @@ export default function TasksTable(props: Props) {
   }, [hasActiveFilters, fetchFilteredData, fetchData]);
 
   usePolling(pollingFn, pollInterval, props.autoRefreshEnabled ?? true);
+  usePolling(fetchTaskTypes, pollInterval, props.autoRefreshEnabled ?? true);
 
   // If auto-refresh is disabled, still fetch on dependency changes
   // (e.g. page, page size, queue, state, filters).
@@ -432,6 +459,13 @@ export default function TasksTable(props: Props) {
     pollingFn();
   }, [pollingFn, props.autoRefreshEnabled]);
 
+  useEffect(() => {
+    if (props.autoRefreshEnabled ?? true) {
+      return;
+    }
+    fetchTaskTypes();
+  }, [fetchTaskTypes, props.autoRefreshEnabled]);
+
   // Reset to page 0 when filter values change
   useEffect(() => {
     setPage(0);
@@ -441,8 +475,7 @@ export default function TasksTable(props: Props) {
   useEffect(() => {
     setFilteredTasks([]);
     setFilteredTotal(0);
-    fetchTaskTypes();
-  }, [fetchTaskTypes, props.selectedGroup, props.taskState, queue]);
+  }, [props.selectedGroup, props.taskState, queue]);
 
   // Clamp page if total shrinks
   useEffect(() => {
@@ -486,7 +519,9 @@ export default function TasksTable(props: Props) {
           menuItemActions={allActions}
         />
       )}
-      <TableContainer component={Paper} className={classes.tableContainer}>
+      <div className={classes.filterLoadingOverlay}>
+        {filterLoading && <LinearProgress className={classes.filterLoadingBar} />}
+        <TableContainer component={Paper} className={classes.tableContainer} style={filterLoading ? { opacity: 0.6, pointerEvents: "none" } : undefined}>
         <Table
           stickyHeader={true}
           className={classes.table}
@@ -523,7 +558,10 @@ export default function TasksTable(props: Props) {
                         <span className={classes.headerLabel}>{col.label}</span>
                         <InputBase
                           value={idFilter}
-                          onChange={(event) => setIdFilter(event.target.value)}
+                          onChange={(event) => {
+                            showFilterLoadingOnNextFetchRef.current = true;
+                            setIdFilter(event.target.value);
+                          }}
                           placeholder="Filtern"
                           className={classes.textFilter}
                           inputProps={{
@@ -536,7 +574,10 @@ export default function TasksTable(props: Props) {
                         <span className={classes.headerLabel}>{col.label}</span>
                         <Select
                           value={typeFilter}
-                          onChange={(event) => setTypeFilter(event.target.value as string)}
+                          onChange={(event) => {
+                            showFilterLoadingOnNextFetchRef.current = true;
+                            setTypeFilter(event.target.value as string);
+                          }}
                           disableUnderline
                           className={classes.typeFilter}
                           displayEmpty
@@ -554,9 +595,10 @@ export default function TasksTable(props: Props) {
                         <span className={classes.headerLabel}>{col.label}</span>
                         <InputBase
                           value={payloadFilter}
-                          onChange={(event) =>
-                            setPayloadFilter(event.target.value)
-                          }
+                          onChange={(event) => {
+                            showFilterLoadingOnNextFetchRef.current = true;
+                            setPayloadFilter(event.target.value);
+                          }}
                           placeholder="Filtern"
                           className={classes.textFilter}
                           inputProps={{
@@ -569,9 +611,10 @@ export default function TasksTable(props: Props) {
                         <span className={classes.headerLabel}>{col.label}</span>
                         <InputBase
                           value={lastErrorFilter}
-                          onChange={(event) =>
-                            setLastErrorFilter(event.target.value)
-                          }
+                          onChange={(event) => {
+                            showFilterLoadingOnNextFetchRef.current = true;
+                            setLastErrorFilter(event.target.value);
+                          }}
                           placeholder="Filtern"
                           className={classes.textFilter}
                           inputProps={{
@@ -649,6 +692,7 @@ export default function TasksTable(props: Props) {
           </TableFooter>
         </Table>
       </TableContainer>
+      </div>
     </div>
   );
 }

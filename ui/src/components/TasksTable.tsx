@@ -36,7 +36,6 @@ import {
   listRetryTasks,
   listScheduledTasks,
   PaginationOptions,
-  TaskInfo,
 } from "../api";
 import { TaskState } from "../types/taskState";
 
@@ -68,6 +67,16 @@ const useStyles = makeStyles((theme) => ({
     flexDirection: "column",
     alignItems: "flex-start",
   },
+  textFilter: {
+    marginTop: theme.spacing(0.5),
+    minWidth: 120,
+    width: "100%",
+    maxWidth: 220,
+    padding: theme.spacing(0.25, 1),
+    fontSize: "0.75rem",
+    borderRadius: theme.shape.borderRadius,
+    background: theme.palette.action.hover,
+  },
   typeFilter: {
     marginTop: theme.spacing(0.5),
     minWidth: 140,
@@ -77,16 +86,6 @@ const useStyles = makeStyles((theme) => ({
       paddingBottom: theme.spacing(0.5),
       paddingLeft: 0,
     },
-  },
-  textFilter: {
-    marginTop: theme.spacing(0.5),
-    minWidth: 160,
-    width: "100%",
-    maxWidth: 220,
-    padding: theme.spacing(0.25, 1),
-    fontSize: "0.75rem",
-    borderRadius: theme.shape.borderRadius,
-    background: theme.palette.action.hover,
   },
   alert: {
     borderTopLeftRadius: 0,
@@ -138,11 +137,13 @@ export default function TasksTable(props: Props) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [activeTaskId, setActiveTaskId] = useState<string>("");
   const [idFilter, setIdFilter] = useState<string>("");
-  const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [typeFilter, setTypeFilter] = useState<string>("");
   const [payloadFilter, setPayloadFilter] = useState<string>("");
   const [lastErrorFilter, setLastErrorFilter] = useState<string>("");
-  const [allTasks, setAllTasks] = useState<TaskInfo[]>([]);
-  const [hasLoadedAllTasks, setHasLoadedAllTasks] = useState(false);
+  const [taskTypes, setTaskTypes] = useState<string[]>([]);
+  // State for backend-filtered results
+  const [filteredTasks, setFilteredTasks] = useState<TaskInfoExtended[]>([]);
+  const [filteredTotal, setFilteredTotal] = useState<number>(0);
 
   const handlePageChange = (
     event: React.MouseEvent<HTMLButtonElement> | null,
@@ -159,7 +160,7 @@ export default function TasksTable(props: Props) {
   };
 
   const handleSelectAllClick = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const visibleTaskIds = paginatedTasks.map((t) => t.id);
+    const visibleTaskIds = displayedTasks.map((t) => t.id);
     if (event.target.checked) {
       setSelectedIds(Array.from(new Set(selectedIds.concat(visibleTaskIds))));
     } else {
@@ -253,65 +254,102 @@ export default function TasksTable(props: Props) {
     listTasks(queue, pageOpts);
   }, [page, pageSize, queue, listTasks]);
 
-  const fetchTaskPage = useCallback(
-    async (pageNumber: number, size: number): Promise<TaskInfo[]> => {
-      const pageOpts = { page: pageNumber, size };
+  const hasActiveFilters =
+    idFilter.trim() !== "" ||
+    typeFilter.trim() !== "" ||
+    payloadFilter.trim() !== "" ||
+    lastErrorFilter.trim() !== "";
 
-      switch (props.taskState) {
-        case "active":
-          return (await listActiveTasks(queue, pageOpts)).tasks;
-        case "pending":
-          return (await listPendingTasks(queue, pageOpts)).tasks;
-        case "scheduled":
-          return (await listScheduledTasks(queue, pageOpts)).tasks;
-        case "retry":
-          return (await listRetryTasks(queue, pageOpts)).tasks;
-        case "archived":
-          return (await listArchivedTasks(queue, pageOpts)).tasks;
-        case "completed":
-          return (await listCompletedTasks(queue, pageOpts)).tasks;
-        case "aggregating":
-          if (!props.selectedGroup) {
-            return [];
-          }
-          return (
-            await listAggregatingTasks(queue, props.selectedGroup, pageOpts)
-          ).tasks;
-        default:
-          return [];
-      }
-    },
-    [props.selectedGroup, props.taskState, queue]
-  );
-
-  const fetchAllTasks = useCallback(async () => {
-    if (props.totalTaskCount === 0) {
-      setAllTasks([]);
-      setHasLoadedAllTasks(true);
-      return;
-    }
-
-    const fetchSize = Math.max(pageSize, 200);
-    const totalPages = Math.ceil(props.totalTaskCount / fetchSize);
-
+  // Fetch from backend when filters are active (direct API call, bypasses Redux)
+  const fetchFilteredData = useCallback(async () => {
+    if (!hasActiveFilters) return;
+    const filterOpts: PaginationOptions = {
+      page: page + 1,
+      size: pageSize,
+      ...(idFilter.trim() && { filter_id: idFilter.trim() }),
+      ...(typeFilter.trim() && { filter_type: typeFilter.trim() }),
+      ...(payloadFilter.trim() && { filter_payload: payloadFilter.trim() }),
+      ...(lastErrorFilter.trim() && { filter_last_error: lastErrorFilter.trim() }),
+    };
     try {
-      const pages = await Promise.all(
-        Array.from({ length: totalPages }, (_, index) =>
-          fetchTaskPage(index + 1, fetchSize)
-        )
-      );
-
-      const uniqueTasks = Array.from(
-        new Map(pages.flat().map((task) => [task.id, task])).values()
-      );
-
-      setAllTasks(uniqueTasks);
-      setHasLoadedAllTasks(true);
+      let tasks: TaskInfoExtended[];
+      let total: number;
+      switch (props.taskState) {
+        case "active": {
+          const r = await listActiveTasks(queue, filterOpts);
+          tasks = r.tasks.map((t) => ({ ...t, requestPending: false, canceling: false } as TaskInfoExtended));
+          total = r.filtered_total ?? r.tasks.length;
+          setTaskTypes(r.task_types ?? []);
+          break;
+        }
+        case "pending": {
+          const r = await listPendingTasks(queue, filterOpts);
+          tasks = r.tasks.map((t) => ({ ...t, requestPending: false, canceling: false } as TaskInfoExtended));
+          total = r.filtered_total ?? r.tasks.length;
+          setTaskTypes(r.task_types ?? []);
+          break;
+        }
+        case "scheduled": {
+          const r = await listScheduledTasks(queue, filterOpts);
+          tasks = r.tasks.map((t) => ({ ...t, requestPending: false, canceling: false } as TaskInfoExtended));
+          total = r.filtered_total ?? r.tasks.length;
+          setTaskTypes(r.task_types ?? []);
+          break;
+        }
+        case "retry": {
+          const r = await listRetryTasks(queue, filterOpts);
+          tasks = r.tasks.map((t) => ({ ...t, requestPending: false, canceling: false } as TaskInfoExtended));
+          total = r.filtered_total ?? r.tasks.length;
+          setTaskTypes(r.task_types ?? []);
+          break;
+        }
+        case "archived": {
+          const r = await listArchivedTasks(queue, filterOpts);
+          tasks = r.tasks.map((t) => ({ ...t, requestPending: false, canceling: false } as TaskInfoExtended));
+          total = r.filtered_total ?? r.tasks.length;
+          setTaskTypes(r.task_types ?? []);
+          break;
+        }
+        case "completed": {
+          const r = await listCompletedTasks(queue, filterOpts);
+          tasks = r.tasks.map((t) => ({ ...t, requestPending: false, canceling: false } as TaskInfoExtended));
+          total = r.filtered_total ?? r.tasks.length;
+          setTaskTypes(r.task_types ?? []);
+          break;
+        }
+        case "aggregating": {
+          if (!props.selectedGroup) {
+            tasks = [];
+            total = 0;
+            break;
+          }
+          const r = await listAggregatingTasks(queue, props.selectedGroup, filterOpts);
+          tasks = r.tasks.map((t) => ({ ...t, requestPending: false, canceling: false } as TaskInfoExtended));
+          total = r.filtered_total ?? r.tasks.length;
+          setTaskTypes(r.task_types ?? []);
+          break;
+        }
+        default:
+          tasks = [];
+          total = 0;
+      }
+      setFilteredTasks(tasks);
+      setFilteredTotal(total);
     } catch (error) {
-      console.error("fetchAllTasks: ", error);
-      setHasLoadedAllTasks(false);
+      console.error("fetchFilteredData: ", error);
     }
-  }, [fetchTaskPage, pageSize, props.totalTaskCount]);
+  }, [
+    hasActiveFilters,
+    idFilter,
+    lastErrorFilter,
+    page,
+    pageSize,
+    payloadFilter,
+    props.selectedGroup,
+    props.taskState,
+    queue,
+    typeFilter,
+  ]);
 
   const visibleColumns = useMemo(
     () =>
@@ -321,83 +359,92 @@ export default function TasksTable(props: Props) {
     [props.columns]
   );
 
-  const pageTaskMap = useMemo(
-    () => new Map(props.tasks.map((task) => [task.id, task])),
-    [props.tasks]
-  );
-
-  const allTaskItems = useMemo(() => {
-    const source = hasLoadedAllTasks ? allTasks : props.tasks;
-
-    return source.map((task) => {
-      const pageTask = pageTaskMap.get(task.id);
-      return {
-        ...task,
-        requestPending: pageTask?.requestPending ?? false,
-        canceling: pageTask?.canceling,
-      } as TaskInfoExtended;
-    });
-  }, [allTasks, hasLoadedAllTasks, pageTaskMap, props.tasks]);
-
-  const taskTypes = useMemo(
-    () => Array.from(new Set(allTaskItems.map((task) => task.type))).sort(),
-    [allTaskItems]
-  );
-
-  const filteredTasks = useMemo(() => {
-    return allTaskItems.filter((task) => {
-      const matchesType = typeFilter === "all" || task.type === typeFilter;
-      const matchesId =
-        idFilter.trim() === "" ||
-        task.id.toLowerCase().includes(idFilter.trim().toLowerCase());
-      const matchesPayload =
-        payloadFilter.trim() === "" ||
-        task.payload.toLowerCase().includes(payloadFilter.trim().toLowerCase());
-      const matchesLastError =
-        lastErrorFilter.trim() === "" ||
-        task.error_message
-          .toLowerCase()
-          .includes(lastErrorFilter.trim().toLowerCase());
-
-      return matchesId && matchesType && matchesPayload && matchesLastError;
-    });
-  }, [allTaskItems, idFilter, lastErrorFilter, payloadFilter, typeFilter]);
-
-  const hasActiveFilters =
-    idFilter.trim() !== "" ||
-    typeFilter !== "all" ||
-    payloadFilter.trim() !== "" ||
-    lastErrorFilter.trim() !== "";
-
-  const effectiveTotalCount = hasActiveFilters
-    ? filteredTasks.length
-    : props.totalTaskCount;
-
-  const paginatedTasks = useMemo(() => {
-    if (!hasActiveFilters && !hasLoadedAllTasks) {
-      return props.tasks;
+  const fetchTaskTypes = useCallback(async () => {
+    const pageOpts: PaginationOptions = { page: 1, size: 1 };
+    try {
+      switch (props.taskState) {
+        case "active": {
+          const r = await listActiveTasks(queue, pageOpts);
+          setTaskTypes(r.task_types ?? []);
+          break;
+        }
+        case "pending": {
+          const r = await listPendingTasks(queue, pageOpts);
+          setTaskTypes(r.task_types ?? []);
+          break;
+        }
+        case "scheduled": {
+          const r = await listScheduledTasks(queue, pageOpts);
+          setTaskTypes(r.task_types ?? []);
+          break;
+        }
+        case "retry": {
+          const r = await listRetryTasks(queue, pageOpts);
+          setTaskTypes(r.task_types ?? []);
+          break;
+        }
+        case "archived": {
+          const r = await listArchivedTasks(queue, pageOpts);
+          setTaskTypes(r.task_types ?? []);
+          break;
+        }
+        case "completed": {
+          const r = await listCompletedTasks(queue, pageOpts);
+          setTaskTypes(r.task_types ?? []);
+          break;
+        }
+        case "aggregating": {
+          if (!props.selectedGroup) {
+            setTaskTypes([]);
+            break;
+          }
+          const r = await listAggregatingTasks(queue, props.selectedGroup, pageOpts);
+          setTaskTypes(r.task_types ?? []);
+          break;
+        }
+      }
+    } catch (error) {
+      console.error("fetchTaskTypes: ", error);
+      setTaskTypes([]);
     }
+  }, [props.selectedGroup, props.taskState, queue]);
 
-    const start = page * pageSize;
-    return filteredTasks.slice(start, start + pageSize);
-  }, [filteredTasks, hasActiveFilters, hasLoadedAllTasks, page, pageSize, props.tasks]);
+  // When filters are active use locally-fetched data, otherwise use Redux data
+  const displayedTasks = hasActiveFilters ? filteredTasks : props.tasks;
+  const effectiveTotalCount = hasActiveFilters ? filteredTotal : props.totalTaskCount;
 
   const pollingFn = useCallback(() => {
+    if (hasActiveFilters) {
+      fetchFilteredData();
+      return;
+    }
     fetchData();
-    fetchAllTasks();
-  }, [fetchAllTasks, fetchData]);
+  }, [hasActiveFilters, fetchFilteredData, fetchData]);
 
   usePolling(pollingFn, pollInterval, props.autoRefreshEnabled ?? true);
 
+  // If auto-refresh is disabled, still fetch on dependency changes
+  // (e.g. page, page size, queue, state, filters).
+  useEffect(() => {
+    if (props.autoRefreshEnabled ?? true) {
+      return;
+    }
+    pollingFn();
+  }, [pollingFn, props.autoRefreshEnabled]);
+
+  // Reset to page 0 when filter values change
   useEffect(() => {
     setPage(0);
   }, [idFilter, lastErrorFilter, payloadFilter, typeFilter]);
 
+  // Clear local filtered state when queue/state/group changes
   useEffect(() => {
-    setHasLoadedAllTasks(false);
-    setAllTasks([]);
-  }, [props.selectedGroup, props.taskState, queue]);
+    setFilteredTasks([]);
+    setFilteredTotal(0);
+    fetchTaskTypes();
+  }, [fetchTaskTypes, props.selectedGroup, props.taskState, queue]);
 
+  // Clamp page if total shrinks
   useEffect(() => {
     const maxPage = Math.max(0, Math.ceil(effectiveTotalCount / pageSize) - 1);
     if (page > maxPage) {
@@ -426,9 +473,9 @@ export default function TasksTable(props: Props) {
     );
   }
 
-  const rowCount = paginatedTasks.length;
+  const rowCount = displayedTasks.length;
   const numSelected = selectedIds.filter((id) =>
-    paginatedTasks.some((task) => task.id === id)
+    displayedTasks.some((task) => task.id === id)
   ).length;
   return (
     <div>
@@ -489,14 +536,12 @@ export default function TasksTable(props: Props) {
                         <span className={classes.headerLabel}>{col.label}</span>
                         <Select
                           value={typeFilter}
-                          onChange={(event) =>
-                            setTypeFilter(event.target.value as string)
-                          }
+                          onChange={(event) => setTypeFilter(event.target.value as string)}
                           disableUnderline
                           className={classes.typeFilter}
                           displayEmpty
                         >
-                          <MenuItem value="all">Alle</MenuItem>
+                          <MenuItem value="">Alle</MenuItem>
                           {taskTypes.map((taskType) => (
                             <MenuItem key={taskType} value={taskType}>
                               {taskType}
@@ -542,16 +587,16 @@ export default function TasksTable(props: Props) {
             </TableRow>
           </TableHead>
           <TableBody>
-            {filteredTasks.length === 0 ? (
+            {displayedTasks.length === 0 && hasActiveFilters ? (
               <TableRow>
                 <TableCell
                   colSpan={visibleColumns.length + (window.READ_ONLY ? 0 : 1)}
                 >
-                  Keine Einträge für den gewählten Type-Filter.
+                  Keine Einträge für den gewählten Filter.
                 </TableCell>
               </TableRow>
             ) : (
-              paginatedTasks.map((task) => {
+              displayedTasks.map((task) => {
                 return props.renderRow({
                   key: task.id,
                   task: task,

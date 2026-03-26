@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,8 +21,10 @@ import (
 // ****************************************************************************
 
 type listActiveTasksResponse struct {
-	Tasks []*activeTask       `json:"tasks"`
-	Stats *queueStateSnapshot `json:"stats"`
+	Tasks         []*activeTask       `json:"tasks"`
+	Stats         *queueStateSnapshot `json:"stats"`
+	FilteredTotal *int                `json:"filtered_total,omitempty"`
+	TaskTypes     []string            `json:"task_types"`
 }
 
 func newListActiveTasksHandlerFunc(inspector *asynq.Inspector, pf PayloadFormatter) http.HandlerFunc {
@@ -29,19 +32,21 @@ func newListActiveTasksHandlerFunc(inspector *asynq.Inspector, pf PayloadFormatt
 		vars := mux.Vars(r)
 		qname := vars["qname"]
 		pageSize, pageNum := getPageOptions(r)
+		filter := getFilterOptions(r)
 
-		tasks, err := inspector.ListActiveTasks(
-			qname, asynq.PageSize(pageSize), asynq.Page(pageNum))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
 		qinfo, err := inspector.GetQueueInfo(qname)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		servers, err := inspector.Servers()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		taskTypes, err := collectTaskTypes(func(page, size int) ([]*asynq.TaskInfo, error) {
+			return inspector.ListActiveTasks(qname, asynq.PageSize(size), asynq.Page(page))
+		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -55,7 +60,33 @@ func newListActiveTasksHandlerFunc(inspector *asynq.Inspector, pf PayloadFormatt
 				}
 			}
 		}
-		activeTasks := toActiveTasks(tasks, pf)
+
+		var activeTasks []*activeTask
+		var filteredTotal *int
+		if filter.isActive() {
+			pageResult, total, err := filteredPaginatedList(
+				filter, pf, pageSize, pageNum,
+				func(page, size int) ([]*asynq.TaskInfo, error) {
+					return inspector.ListActiveTasks(qname, asynq.PageSize(size), asynq.Page(page))
+				},
+				func(t *asynq.TaskInfo) *activeTask { return toActiveTask(t, pf) },
+			)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			activeTasks = pageResult
+			filteredTotal = &total
+		} else {
+			tasks, err := inspector.ListActiveTasks(
+				qname, asynq.PageSize(pageSize), asynq.Page(pageNum))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			activeTasks = toActiveTasks(tasks, pf)
+		}
+
 		for _, t := range activeTasks {
 			workerInfo, ok := m[t.ID]
 			if ok {
@@ -68,8 +99,10 @@ func newListActiveTasksHandlerFunc(inspector *asynq.Inspector, pf PayloadFormatt
 		}
 
 		resp := listActiveTasksResponse{
-			Tasks: activeTasks,
-			Stats: toQueueStateSnapshot(qinfo),
+			Tasks:         activeTasks,
+			Stats:         toQueueStateSnapshot(qinfo),
+			FilteredTotal: filteredTotal,
+			TaskTypes:     taskTypes,
 		}
 		writeResponseJSON(w, resp)
 	}
@@ -155,25 +188,49 @@ func newListPendingTasksHandlerFunc(inspector *asynq.Inspector, pf PayloadFormat
 		vars := mux.Vars(r)
 		qname := vars["qname"]
 		pageSize, pageNum := getPageOptions(r)
-		tasks, err := inspector.ListPendingTasks(
-			qname, asynq.PageSize(pageSize), asynq.Page(pageNum))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		filter := getFilterOptions(r)
 		qinfo, err := inspector.GetQueueInfo(qname)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		payload := make(map[string]interface{})
-		if len(tasks) == 0 {
-			// avoid nil for the tasks field in json output.
-			payload["tasks"] = make([]*pendingTask, 0)
+		taskTypes, err := collectTaskTypes(func(page, size int) ([]*asynq.TaskInfo, error) {
+			return inspector.ListPendingTasks(qname, asynq.PageSize(size), asynq.Page(page))
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if filter.isActive() {
+			tasks, total, err := filteredPaginatedList(
+				filter, pf, pageSize, pageNum,
+				func(page, size int) ([]*asynq.TaskInfo, error) {
+					return inspector.ListPendingTasks(qname, asynq.PageSize(size), asynq.Page(page))
+				},
+				func(t *asynq.TaskInfo) *pendingTask { return toPendingTask(t, pf) },
+			)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			payload["tasks"] = tasks
+			payload["filtered_total"] = total
 		} else {
-			payload["tasks"] = toPendingTasks(tasks, pf)
+			tasks, err := inspector.ListPendingTasks(
+				qname, asynq.PageSize(pageSize), asynq.Page(pageNum))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if len(tasks) == 0 {
+				payload["tasks"] = make([]*pendingTask, 0)
+			} else {
+				payload["tasks"] = toPendingTasks(tasks, pf)
+			}
 		}
 		payload["stats"] = toQueueStateSnapshot(qinfo)
+		payload["task_types"] = taskTypes
 		writeResponseJSON(w, payload)
 	}
 }
@@ -183,25 +240,49 @@ func newListScheduledTasksHandlerFunc(inspector *asynq.Inspector, pf PayloadForm
 		vars := mux.Vars(r)
 		qname := vars["qname"]
 		pageSize, pageNum := getPageOptions(r)
-		tasks, err := inspector.ListScheduledTasks(
-			qname, asynq.PageSize(pageSize), asynq.Page(pageNum))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		filter := getFilterOptions(r)
 		qinfo, err := inspector.GetQueueInfo(qname)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		payload := make(map[string]interface{})
-		if len(tasks) == 0 {
-			// avoid nil for the tasks field in json output.
-			payload["tasks"] = make([]*scheduledTask, 0)
+		taskTypes, err := collectTaskTypes(func(page, size int) ([]*asynq.TaskInfo, error) {
+			return inspector.ListScheduledTasks(qname, asynq.PageSize(size), asynq.Page(page))
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if filter.isActive() {
+			tasks, total, err := filteredPaginatedList(
+				filter, pf, pageSize, pageNum,
+				func(page, size int) ([]*asynq.TaskInfo, error) {
+					return inspector.ListScheduledTasks(qname, asynq.PageSize(size), asynq.Page(page))
+				},
+				func(t *asynq.TaskInfo) *scheduledTask { return toScheduledTask(t, pf) },
+			)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			payload["tasks"] = tasks
+			payload["filtered_total"] = total
 		} else {
-			payload["tasks"] = toScheduledTasks(tasks, pf)
+			tasks, err := inspector.ListScheduledTasks(
+				qname, asynq.PageSize(pageSize), asynq.Page(pageNum))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if len(tasks) == 0 {
+				payload["tasks"] = make([]*scheduledTask, 0)
+			} else {
+				payload["tasks"] = toScheduledTasks(tasks, pf)
+			}
 		}
 		payload["stats"] = toQueueStateSnapshot(qinfo)
+		payload["task_types"] = taskTypes
 		writeResponseJSON(w, payload)
 	}
 }
@@ -211,25 +292,49 @@ func newListRetryTasksHandlerFunc(inspector *asynq.Inspector, pf PayloadFormatte
 		vars := mux.Vars(r)
 		qname := vars["qname"]
 		pageSize, pageNum := getPageOptions(r)
-		tasks, err := inspector.ListRetryTasks(
-			qname, asynq.PageSize(pageSize), asynq.Page(pageNum))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		filter := getFilterOptions(r)
 		qinfo, err := inspector.GetQueueInfo(qname)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		payload := make(map[string]interface{})
-		if len(tasks) == 0 {
-			// avoid nil for the tasks field in json output.
-			payload["tasks"] = make([]*retryTask, 0)
+		taskTypes, err := collectTaskTypes(func(page, size int) ([]*asynq.TaskInfo, error) {
+			return inspector.ListRetryTasks(qname, asynq.PageSize(size), asynq.Page(page))
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if filter.isActive() {
+			tasks, total, err := filteredPaginatedList(
+				filter, pf, pageSize, pageNum,
+				func(page, size int) ([]*asynq.TaskInfo, error) {
+					return inspector.ListRetryTasks(qname, asynq.PageSize(size), asynq.Page(page))
+				},
+				func(t *asynq.TaskInfo) *retryTask { return toRetryTask(t, pf) },
+			)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			payload["tasks"] = tasks
+			payload["filtered_total"] = total
 		} else {
-			payload["tasks"] = toRetryTasks(tasks, pf)
+			tasks, err := inspector.ListRetryTasks(
+				qname, asynq.PageSize(pageSize), asynq.Page(pageNum))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if len(tasks) == 0 {
+				payload["tasks"] = make([]*retryTask, 0)
+			} else {
+				payload["tasks"] = toRetryTasks(tasks, pf)
+			}
 		}
 		payload["stats"] = toQueueStateSnapshot(qinfo)
+		payload["task_types"] = taskTypes
 		writeResponseJSON(w, payload)
 	}
 }
@@ -239,25 +344,49 @@ func newListArchivedTasksHandlerFunc(inspector *asynq.Inspector, pf PayloadForma
 		vars := mux.Vars(r)
 		qname := vars["qname"]
 		pageSize, pageNum := getPageOptions(r)
-		tasks, err := inspector.ListArchivedTasks(
-			qname, asynq.PageSize(pageSize), asynq.Page(pageNum))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		filter := getFilterOptions(r)
 		qinfo, err := inspector.GetQueueInfo(qname)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		payload := make(map[string]interface{})
-		if len(tasks) == 0 {
-			// avoid nil for the tasks field in json output.
-			payload["tasks"] = make([]*archivedTask, 0)
+		taskTypes, err := collectTaskTypes(func(page, size int) ([]*asynq.TaskInfo, error) {
+			return inspector.ListArchivedTasks(qname, asynq.PageSize(size), asynq.Page(page))
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if filter.isActive() {
+			tasks, total, err := filteredPaginatedList(
+				filter, pf, pageSize, pageNum,
+				func(page, size int) ([]*asynq.TaskInfo, error) {
+					return inspector.ListArchivedTasks(qname, asynq.PageSize(size), asynq.Page(page))
+				},
+				func(t *asynq.TaskInfo) *archivedTask { return toArchivedTask(t, pf) },
+			)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			payload["tasks"] = tasks
+			payload["filtered_total"] = total
 		} else {
-			payload["tasks"] = toArchivedTasks(tasks, pf)
+			tasks, err := inspector.ListArchivedTasks(
+				qname, asynq.PageSize(pageSize), asynq.Page(pageNum))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if len(tasks) == 0 {
+				payload["tasks"] = make([]*archivedTask, 0)
+			} else {
+				payload["tasks"] = toArchivedTasks(tasks, pf)
+			}
 		}
 		payload["stats"] = toQueueStateSnapshot(qinfo)
+		payload["task_types"] = taskTypes
 		writeResponseJSON(w, payload)
 	}
 }
@@ -267,24 +396,48 @@ func newListCompletedTasksHandlerFunc(inspector *asynq.Inspector, pf PayloadForm
 		vars := mux.Vars(r)
 		qname := vars["qname"]
 		pageSize, pageNum := getPageOptions(r)
-		tasks, err := inspector.ListCompletedTasks(qname, asynq.PageSize(pageSize), asynq.Page(pageNum))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		filter := getFilterOptions(r)
 		qinfo, err := inspector.GetQueueInfo(qname)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		payload := make(map[string]interface{})
-		if len(tasks) == 0 {
-			// avoid nil for the tasks field in json output.
-			payload["tasks"] = make([]*completedTask, 0)
+		taskTypes, err := collectTaskTypes(func(page, size int) ([]*asynq.TaskInfo, error) {
+			return inspector.ListCompletedTasks(qname, asynq.PageSize(size), asynq.Page(page))
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if filter.isActive() {
+			tasks, total, err := filteredPaginatedList(
+				filter, pf, pageSize, pageNum,
+				func(page, size int) ([]*asynq.TaskInfo, error) {
+					return inspector.ListCompletedTasks(qname, asynq.PageSize(size), asynq.Page(page))
+				},
+				func(t *asynq.TaskInfo) *completedTask { return toCompletedTask(t, pf, rf) },
+			)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			payload["tasks"] = tasks
+			payload["filtered_total"] = total
 		} else {
-			payload["tasks"] = toCompletedTasks(tasks, pf, rf)
+			tasks, err := inspector.ListCompletedTasks(qname, asynq.PageSize(pageSize), asynq.Page(pageNum))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if len(tasks) == 0 {
+				payload["tasks"] = make([]*completedTask, 0)
+			} else {
+				payload["tasks"] = toCompletedTasks(tasks, pf, rf)
+			}
 		}
 		payload["stats"] = toQueueStateSnapshot(qinfo)
+		payload["task_types"] = taskTypes
 		writeResponseJSON(w, payload)
 	}
 }
@@ -295,12 +448,7 @@ func newListAggregatingTasksHandlerFunc(inspector *asynq.Inspector, pf PayloadFo
 		qname := vars["qname"]
 		gname := vars["gname"]
 		pageSize, pageNum := getPageOptions(r)
-		tasks, err := inspector.ListAggregatingTasks(
-			qname, gname, asynq.PageSize(pageSize), asynq.Page(pageNum))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		filter := getFilterOptions(r)
 		qinfo, err := inspector.GetQueueInfo(qname)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -312,14 +460,44 @@ func newListAggregatingTasksHandlerFunc(inspector *asynq.Inspector, pf PayloadFo
 			return
 		}
 		payload := make(map[string]interface{})
-		if len(tasks) == 0 {
-			// avoid nil for the tasks field in json output.
-			payload["tasks"] = make([]*aggregatingTask, 0)
+		taskTypes, err := collectTaskTypes(func(page, size int) ([]*asynq.TaskInfo, error) {
+			return inspector.ListAggregatingTasks(qname, gname, asynq.PageSize(size), asynq.Page(page))
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if filter.isActive() {
+			tasks, total, err := filteredPaginatedList(
+				filter, pf, pageSize, pageNum,
+				func(page, size int) ([]*asynq.TaskInfo, error) {
+					return inspector.ListAggregatingTasks(qname, gname, asynq.PageSize(size), asynq.Page(page))
+				},
+				func(t *asynq.TaskInfo) *aggregatingTask { return toAggregatingTask(t, pf) },
+			)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			payload["tasks"] = tasks
+			payload["filtered_total"] = total
 		} else {
-			payload["tasks"] = toAggregatingTasks(tasks, pf)
+			tasks, err := inspector.ListAggregatingTasks(
+				qname, gname, asynq.PageSize(pageSize), asynq.Page(pageNum))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if len(tasks) == 0 {
+				// avoid nil for the tasks field in json output.
+				payload["tasks"] = make([]*aggregatingTask, 0)
+			} else {
+				payload["tasks"] = toAggregatingTasks(tasks, pf)
+			}
 		}
 		payload["stats"] = toQueueStateSnapshot(qinfo)
 		payload["groups"] = toGroupInfos(groups)
+		payload["task_types"] = taskTypes
 		writeResponseJSON(w, payload)
 	}
 }
@@ -717,6 +895,113 @@ func getPageOptions(r *http.Request) (pageSize, pageNum int) {
 		}
 	}
 	return pageSize, pageNum
+}
+
+// taskFilterOptions holds filtering criteria extracted from query params.
+type taskFilterOptions struct {
+	filterType    string
+	filterID      string
+	filterPayload string
+	filterLastErr string
+}
+
+// getFilterOptions extracts filter query params from the request.
+func getFilterOptions(r *http.Request) taskFilterOptions {
+	q := r.URL.Query()
+	return taskFilterOptions{
+		filterType:    q.Get("filter_type"),
+		filterID:      q.Get("filter_id"),
+		filterPayload: q.Get("filter_payload"),
+		filterLastErr: q.Get("filter_last_error"),
+	}
+}
+
+// isActive reports whether any filter is set.
+func (f taskFilterOptions) isActive() bool {
+	return f.filterType != "" || f.filterID != "" || f.filterPayload != "" || f.filterLastErr != ""
+}
+
+// matchesTaskInfo reports whether a task satisfies all active filter criteria.
+func (f taskFilterOptions) matchesTaskInfo(t *asynq.TaskInfo, pf PayloadFormatter) bool {
+	if f.filterType != "" && !strings.Contains(strings.ToLower(t.Type), strings.ToLower(f.filterType)) {
+		return false
+	}
+	if f.filterID != "" && !strings.Contains(strings.ToLower(t.ID), strings.ToLower(f.filterID)) {
+		return false
+	}
+	if f.filterPayload != "" {
+		formatted := pf.FormatPayload(t.Type, t.Payload)
+		if !strings.Contains(strings.ToLower(formatted), strings.ToLower(f.filterPayload)) {
+			return false
+		}
+	}
+	if f.filterLastErr != "" && !strings.Contains(strings.ToLower(t.LastErr), strings.ToLower(f.filterLastErr)) {
+		return false
+	}
+	return true
+}
+
+// filteredPaginatedList fetches all tasks from the queue that match the filter
+// and returns the page-subset together with the total number of matching tasks.
+func filteredPaginatedList[T any](
+	filter taskFilterOptions,
+	pf PayloadFormatter,
+	pageSize, pageNum int,
+	fetchPage func(page, size int) ([]*asynq.TaskInfo, error),
+	convert func(*asynq.TaskInfo) T,
+) ([]T, int, error) {
+	const batchSize = 200
+	var matching []T
+	for page := 1; ; page++ {
+		tasks, err := fetchPage(page, batchSize)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, t := range tasks {
+			if filter.matchesTaskInfo(t, pf) {
+				matching = append(matching, convert(t))
+			}
+		}
+		if len(tasks) < batchSize {
+			break
+		}
+	}
+	total := len(matching)
+	start := (pageNum - 1) * pageSize
+	if start >= total {
+		return make([]T, 0), total, nil
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return matching[start:end], total, nil
+}
+
+func collectTaskTypes(fetchPage func(page, size int) ([]*asynq.TaskInfo, error)) ([]string, error) {
+	const batchSize = 200
+	set := make(map[string]struct{})
+	for page := 1; ; page++ {
+		tasks, err := fetchPage(page, batchSize)
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range tasks {
+			if t.Type == "" {
+				continue
+			}
+			set[t.Type] = struct{}{}
+		}
+		if len(tasks) < batchSize {
+			break
+		}
+	}
+	out := make([]string, 0, len(set))
+	for typ := range set {
+		out = append(out, typ)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func newGetTaskHandlerFunc(inspector *asynq.Inspector, pf PayloadFormatter, rf ResultFormatter) http.HandlerFunc {

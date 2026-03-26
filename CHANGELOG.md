@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-03-26
+
+### Changed
+
+- (ui): Switched task table filtering from frontend in-memory filtering to backend-driven filtering requests.
+- (ui): Updated task table type-filter options to be loaded from backend-provided `task_types` per queue/state/group.
+- (ui/api): Extended `PaginationOptions` and list response typings to include backend filtering parameters and metadata.
+
+### Fixed
+
+- (ui): Fixed filtered table updates when Auto-Update is disabled by triggering fetches on filter, page, and pagination dependency changes.
+
 ## [0.7.3] - 2026-03-13
 
 ### Added
